@@ -6,51 +6,33 @@ import psycopg2
 import os
 from sqlalchemy import create_engine
 import pandas as pd
+from modules.spark import fetch_pg_table_with_spark, write_spark_df_to_parquet
+from modules.tidb import load_to_mysql
+from dotenv import load_dotenv
 
-spark = SparkSession.builder \
+load_dotenv()  # Load environment variables from .env file
+
+DATA_OWNER = os.getenv("DATA_OWNER", "default_owner")
+spark:SparkSession = SparkSession.builder \
         .config("spark.jars.packages", "org.postgresql:postgresql:42.7.0") \
         .master("local") \
         .appName("PySpark_Postgres").getOrCreate()
         
 def extract_transform_top_countries():
-    df_city = spark.read.format("jdbc") \
-    .option("url", "jdbc:postgresql://34.56.65.122:5231/project3") \
-    .option("driver", "org.postgresql.Driver") \
-    .option("dbtable", "city") \
-    .option("user", "postgres") \
-    .option("password", "ftdebatch3").load()
-    df_city.createOrReplaceTempView("city")
+    df_city = fetch_pg_table_with_spark(spark=spark, table_name="city")
     
-    df_country = spark.read.format("jdbc") \
-    .option("url", "jdbc:postgresql://34.56.65.122:5231/project3") \
-    .option("driver", "org.postgresql.Driver") \
-    .option("dbtable", "country") \
-    .option("user", "postgres") \
-    .option("password", "ftdebatch3").load()
-    df_country.createOrReplaceTempView("country")
+    df_country = fetch_pg_table_with_spark(spark=spark,table_name="country")
     
-    df_customer = spark.read.format("jdbc") \
-    .option("url", "jdbc:postgresql://34.56.65.122:5231/project3") \
-    .option("driver", "org.postgresql.Driver") \
-    .option("dbtable", "customer") \
-    .option("user", "postgres") \
-    .option("password", "ftdebatch3").load()
-    df_customer.createOrReplaceTempView("customer")
+    df_customer = fetch_pg_table_with_spark(spark=spark,table_name="customer")
     
-    df_address = spark.read.format("jdbc") \
-    .option("url", "jdbc:postgresql://34.56.65.122:5231/project3") \
-    .option("driver", "org.postgresql.Driver") \
-    .option("dbtable", "address") \
-    .option("user", "postgres") \
-    .option("password", "ftdebatch3").load()
-    df_address.createOrReplaceTempView("address")
+    df_address = fetch_pg_table_with_spark(spark=spark,table_name="address")
     
-    df_result = spark.sql('''
+    df_result = spark.sql(f'''
         SELECT
             country,
             COUNT(country) as total,
             current_date() as date,
-            'raihan' as data_owner
+            '{DATA_OWNER}' as data_owner
         FROM customer
         JOIN address ON customer.address_id = address.address_id
         JOIN city ON address.city_id = city.city_id
@@ -58,17 +40,9 @@ def extract_transform_top_countries():
         GROUP BY country
         ORDER BY total DESC
         ''')
-    
-    df_result.write.mode('overwrite') \
-    .partitionBy('date') \
-    .option('compression', 'snappy') \
-    .option('partitionOverwriteMode', 'dynamic') \
-    .save('data_result_1')
+    parquet_result_name = 'data_result_1'
+
+    write_spark_df_to_parquet(df_result, parquet_result_name)
     
 def load_top_countries():
-    df = pd.read_parquet('data_result_1')
-
-    engine = create_engine(
-        'mysql+mysqlconnector://4FFFhK9fXu6JayE.root:9v07S0pKe4ZYCkjE@gateway01.ap-southeast-1.prod.aws.tidbcloud.com:4000/project3',
-        echo=False)
-    df.to_sql(name='top_country', con=engine, if_exists='append')
+    load_to_mysql(parquet_result_name='data_result_1',mysql_table_name='top_country')

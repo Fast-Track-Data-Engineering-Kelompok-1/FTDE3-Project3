@@ -6,43 +6,31 @@ import psycopg2
 import os
 from sqlalchemy import create_engine
 import pandas as pd
+from modules.spark import fetch_pg_table_with_spark, write_spark_df_to_parquet
+from dotenv import load_dotenv
+from modules.tidb import load_to_mysql
 
-spark = SparkSession.builder \
+load_dotenv()  # Load environment variables from .env file
+
+spark :SparkSession = SparkSession.builder \
         .config("spark.jars.packages", "org.postgresql:postgresql:42.7.0") \
         .master("local") \
         .appName("PySpark_Postgres").getOrCreate()
-        
+DATA_OWNER = os.getenv("DATA_OWNER", "default_owner")
+
 def extract_total_film():
-    df_city = spark.read.format("jdbc") \
-    .option("url", "jdbc:postgresql://34.56.65.122:5231/project3") \
-    .option("driver", "org.postgresql.Driver") \
-    .option("dbtable", "category") \
-    .option("user", "postgres") \
-    .option("password", "ftdebatch3").load()
-    df_city.createOrReplaceTempView("category")
+    df_category = fetch_pg_table_with_spark(spark=spark, table_name="category")
     
-    df_country = spark.read.format("jdbc") \
-    .option("url", "jdbc:postgresql://34.56.65.122:5231/project3") \
-    .option("driver", "org.postgresql.Driver") \
-    .option("dbtable", "film_category") \
-    .option("user", "postgres") \
-    .option("password", "ftdebatch3").load()
-    df_country.createOrReplaceTempView("film_category")
+    df_film_category = fetch_pg_table_with_spark(spark=spark, table_name="film_category" )
     
-    df_customer = spark.read.format("jdbc") \
-    .option("url", "jdbc:postgresql://34.56.65.122:5231/project3") \
-    .option("driver", "org.postgresql.Driver") \
-    .option("dbtable", "film") \
-    .option("user", "postgres") \
-    .option("password", "ftdebatch3").load()
-    df_customer.createOrReplaceTempView("film")
+    df_film = fetch_pg_table_with_spark(spark=spark, table_name="film")
     
-    df_result = spark.sql('''
+    df_result = spark.sql(f'''
         SELECT
             category.name as category_name,
             COUNT(film_category.film_id) as total_film,
             current_date() as date,
-            'raihan' as data_owner
+            '{DATA_OWNER}' as data_owner
         FROM category
         JOIN film_category ON category.category_id = film_category.category_id
         JOIN film ON film_category.film_id = film.film_id
@@ -50,19 +38,8 @@ def extract_total_film():
         ORDER BY total_film DESC
         ''')
     
-    df_result.write.mode('overwrite') \
-    .partitionBy('date') \
-    .option('compression', 'snappy') \
-    .option('partitionOverwriteMode', 'dynamic') \
-    .save('data_result_2')
+    parquet_result_name = 'data_result_2'
+    write_spark_df_to_parquet(df_result, parquet_result_name)
     
 def load_total_film():
-    from sqlalchemy import create_engine
-    import pandas as pd
-
-    df = pd.read_parquet('data_result_2')
-
-    engine = create_engine(
-        'mysql+mysqlconnector://4FFFhK9fXu6JayE.root:9v07S0pKe4ZYCkjE@gateway01.ap-southeast-1.prod.aws.tidbcloud.com:4000/project3',
-        echo=False)
-    df.to_sql(name='total_film_by_category', con=engine, if_exists='append')
+    load_to_mysql(parquet_result_name='data_result_2',mysql_table_name='total_film_by_category')
